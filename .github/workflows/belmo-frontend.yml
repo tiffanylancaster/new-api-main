@@ -1,0 +1,46 @@
+name: Build Belmo Frontend
+
+on:
+  push:
+    branches: [belmo-free]
+    paths:
+      - '.github/workflows/belmo-frontend.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+
+      - name: Install locked dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Build frontend with Node
+        working-directory: web
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          export VITE_REACT_APP_VERSION="$(git describe --tags --always)"
+          node ./node_modules/vite/bin/vite.js build
+          test -s dist/index.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: belmo-web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 1
