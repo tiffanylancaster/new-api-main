@@ -1,0 +1,57 @@
+﻿name: Prepare Belmo Upgrade
+
+on:
+  push:
+    branches: [belmo-upgrade]
+    paths-ignore:
+      - 'web/dist/**'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      CGO_ENABLED: '0'
+      GOWORK: 'off'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          bun install --frozen-lockfile
+          DISABLE_ESLINT_PLUGIN=true \
+          VITE_REACT_APP_VERSION="$(cat ../VERSION)" \
+          bun run build
+          test -s dist/index.html
+
+      - name: Verify backend builds
+        run: |
+          go version
+          go build -p 1 -trimpath \
+            -ldflags "-s -w -X github.com/QuantumNous/new-api/common.Version=$(cat VERSION)" \
+            -o /tmp/belmo-app .
+          /tmp/belmo-app --version
+
+      - name: Save built frontend
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f web/dist
+          if ! git diff --cached --quiet; then
+            git commit -m "Build matching frontend for Belmo"
+            git push origin HEAD:belmo-upgrade
+          fi
