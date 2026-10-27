@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -216,13 +217,16 @@ func main() {
 		Handler: server,
 	}
 
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		common.FatalLog(common.LogText("failed to start HTTP server: %s", err.Error()))
+		return
+	}
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			common.FatalLog(common.LogText("failed to start HTTP server: %s", err.Error()))
 		}
 	}()
-
-	time.Sleep(100 * time.Millisecond)
 
 	common.LogStartupSuccess(startTime, port)
 
@@ -288,6 +292,35 @@ func InjectGoogleAnalytics() {
 	indexPage = bytes.ReplaceAll(indexPage, placeholder, analyticsInject)
 }
 
+func initializeResourcePhase(name string, initialize func() error) error {
+	started := time.Now()
+	common.SysLog(common.LogText("startup phase %s started", name))
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				common.SysLog(common.LogText("startup phase %s still running after %s; HTTP is not ready", name, time.Since(started).Round(time.Second)))
+			}
+		}
+	}()
+	err := initialize()
+	close(done)
+	<-stopped
+	if err != nil {
+		common.SysLog(common.LogText("startup phase %s failed after %s", name, time.Since(started).Round(time.Millisecond)))
+		return err
+	}
+	common.SysLog(common.LogText("startup phase %s completed in %s", name, time.Since(started).Round(time.Millisecond)))
+	return nil
+}
+
 func InitResources() error {
 	// Initialize resources here if needed
 	// This is a placeholder function for future resource initialization
@@ -309,12 +342,12 @@ func InitResources() error {
 	service.InitHttpClient()
 
 	// Initialize SQL Database
-	err = model.InitDB()
+	err = initializeResourcePhase("primary database and migrations", model.InitDB)
 	if err != nil {
 		common.FatalLog(common.LogText("failed to initialize database: %s", err.Error()))
 		return err
 	}
-	if err = authz.Init(model.DB); err != nil {
+	if err = initializeResourcePhase("authorization", func() error { return authz.Init(model.DB) }); err != nil {
 		common.FatalLog(common.LogText("failed to initialize authorization: %s", err.Error()))
 		return err
 	}
@@ -339,7 +372,7 @@ func InitResources() error {
 	common.CleanupOldCacheFiles()
 
 	// Initialize SQL Database
-	err = model.InitLogDB()
+	err = initializeResourcePhase("log database and migrations", model.InitLogDB)
 	if err != nil {
 		return err
 	}
